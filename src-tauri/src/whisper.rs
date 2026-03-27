@@ -2,11 +2,12 @@
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
-use whisper_rs::{FullParams, WhisperContext};
+use whisper_rs::{FullParams, WhisperContext, WhisperContextParameters, WhisperState};
 
 /// Transcription engine using whisper.cpp
 pub struct WhisperEngine {
     ctx: WhisperContext,
+    state: WhisperState,
     model_path: PathBuf,
 }
 
@@ -14,9 +15,13 @@ impl WhisperEngine {
     /// Download and initialize the whisper model
     pub fn new(model_size: ModelSize) -> Result<Self> {
         let model_path = WhisperEngine::ensure_model(model_size)?;
-        let ctx = WhisperContext::new(&model_path)
-            .context("Failed to load Whisper model")?;
-        Ok(Self { ctx, model_path })
+        let ctx = WhisperContext::new_from_file_with_params(
+            &model_path,
+            WhisperContextParameters::new(),
+        )
+        .context("Failed to load Whisper model")?;
+        let state = ctx.create_state().context("Failed to create Whisper state")?;
+        Ok(Self { ctx, state, model_path })
     }
 
     /// Download model if not cached
@@ -78,14 +83,15 @@ impl WhisperEngine {
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
 
-        self.ctx.full(params, samples)?;
+        self.state.full(params, samples)?;
 
         // Collect all results
         let mut result = String::new();
-        let n_segments = self.ctx.n_segments();
+        let n_segments = self.state.n_segments();
         for i in 0..n_segments {
-            let segment = self.ctx.full_get_segment_text(i);
-            result.push_str(&segment);
+            if let Some(segment) = self.state.segment(i) {
+                result.push_str(&segment.text());
+            }
         }
 
         Ok(result.trim().to_string())
