@@ -4,15 +4,6 @@ import "./App.css";
 
 type Status = "idle" | "recording" | "processing" | "done" | "error";
 
-interface Settings {
-  hotkey: string;
-  language: string;
-  polish_level: string;
-  llm_provider: string;
-  llm_model: string;
-  whisper_model: string;
-}
-
 interface HistoryEntry {
   id: number;
   timestamp: string;
@@ -24,7 +15,6 @@ interface HistoryEntry {
 
 function App() {
   const [status, setStatus] = useState<Status>("idle");
-  const [settings, setSettings] = useState<Settings | null>(null);
   const [micAvailable, setMicAvailable] = useState(false);
   const [llmAvailable, setLlmAvailable] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -38,8 +28,7 @@ function App() {
 
   const loadState = async () => {
     try {
-      const s = await invoke<Settings>("get_settings");
-      setSettings(s);
+      await invoke("get_settings");
       const mic = await invoke<boolean>("check_mic");
       setMicAvailable(mic);
       const llm = await invoke<boolean>("check_llm");
@@ -99,7 +88,7 @@ function App() {
   }, [status, stopRecording]);
 
   const micReady = micAvailable ? "ready" : "unavailable";
-  const llmReady = llmAvailable ? "ready" : "unavailable";
+  const llmReady = llmAvailable ? "ready" : "offline";
 
   return (
     <div className="app">
