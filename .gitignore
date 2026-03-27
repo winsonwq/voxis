@@ -1,0 +1,44 @@
+# Build outputs
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Tauri / Cargo
+/src-tauri/target/
+/src-tauri/Cargo.lock
+
+# Node
+node_modules/
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage/
+*.lcov
+
+# Whisper models (downloaded at runtime)
+models/
+
+# Build artifacts
+dist/
+build/
+*.tar.gz
