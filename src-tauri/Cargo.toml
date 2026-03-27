@@ -1,0 +1,57 @@
+[package]
+name = "voxis"
+version = "0.1.0"
+description = "AI voice input with real-time polish"
+authors = ["Voix Contributors"]
+edition = "2021"
+
+[lib]
+name = "voxis_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-notification = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Audio capture
+cpal = "0.15"
+
+# Whisper transcription
+whisper-rs = "0.16"
+
+# HTTP client for Ollama/OpenAI
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+tokio = { version = "1", features = ["full"] }
+
+# Text injection
+enigo = "0.3"
+
+# Settings / persistence
+rusqlite = { version = "0.32", features = ["bundled"] }
+dirs = "5"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Async
+futures = "0.3"
+
+# Date/time
+chrono = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.25"
+core-graphics = "0.24"
