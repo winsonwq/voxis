@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
 type Status = "idle" | "recording" | "processing" | "done" | "error";
@@ -21,79 +22,117 @@ function App() {
   const [lastResult, setLastResult] = useState<{ original: string; polished: string } | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [elapsed, setElapsed] = useState(0);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const tickerRef = useRef<number | null>(null);
+  const levelRef = useRef<number | null>(null);
+  const startTimeRef = useRef<number>(0);
 
   useEffect(() => {
     loadState();
+
+    // Listen for backend events
+    const unlisten1 = listen("recording-started", () => {
+      setStatus("recording");
+      startTimeRef.current = Date.now();
+    });
+
+    const unlisten2 = listen<string>("recording-stopped", (event) => {
+      setLastResult({ original: "", polished: event.payload });
+      setStatus("done");
+      setTimeout(() => setStatus("idle"), 3000);
+    });
+
+    return () => {
+      unlisten1.then((f) => f());
+      unlisten2.then((f) => f());
+    };
   }, []);
 
   const loadState = async () => {
     try {
-      await invoke("get_settings");
+      await invoke("init_whisper");
+      await invoke("init_llm");
       const mic = await invoke<boolean>("check_mic");
       setMicAvailable(mic);
       const llm = await invoke<boolean>("check_llm");
       setLlmAvailable(llm);
       const h = await invoke<HistoryEntry[]>("get_history", { limit: 20 });
       setHistory(h);
-      await invoke("init_whisper");
-      await invoke("init_llm");
     } catch (e) {
       console.error("Init error:", e);
     }
   };
 
-  const startRecording = useCallback(async () => {
-    if (status !== "idle") return;
-    setStatus("recording");
-    setErrorMsg("");
+  const startTicker = () => {
+    startTimeRef.current = Date.now();
+    tickerRef.current = window.setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
+    }, 100);
+    levelRef.current = window.setInterval(async () => {
+      try {
+        const level = await invoke<number>("get_audio_level");
+        setAudioLevel(level);
+      } catch {}
+    }, 50);
+  };
+
+  const stopTicker = () => {
+    if (tickerRef.current) clearInterval(tickerRef.current);
+    if (levelRef.current) clearInterval(levelRef.current);
     setElapsed(0);
-    const start = Date.now();
-    const ticker = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 100);
-    (window as any).__voxis_ticker = ticker;
-  }, [status]);
+    setAudioLevel(0);
+  };
 
-  const stopRecording = useCallback(async () => {
-    if (status !== "recording") return;
-    const ticker = (window as any).__voxis_ticker;
-    if (ticker) clearInterval(ticker);
-    setStatus("processing");
-
-    try {
-      const result = await invoke<{ original: string; polished: string; latency_ms: number }>(
-        "transcribe_and_polish",
-        { durationSecs: Math.max(1, elapsed) }
-      );
-      setLastResult({ original: result.original, polished: result.polished });
-      await invoke("inject", { result });
-      setStatus("done");
-      setTimeout(() => setStatus("idle"), 2000);
-      const h = await invoke<HistoryEntry[]>("get_history", { limit: 20 });
-      setHistory(h);
-    } catch (e: any) {
-      setErrorMsg(e.toString());
-      setStatus("error");
-      setTimeout(() => setStatus("idle"), 3000);
+  const toggleRecording = async () => {
+    if (status === "idle") {
+      try {
+        const r = await invoke<boolean>("is_currently_recording");
+        if (!r) {
+          await invoke("start_recording");
+          setStatus("recording");
+          startTicker();
+        }
+      } catch (e: any) {
+        setErrorMsg(e.toString());
+        setStatus("error");
+        setTimeout(() => setStatus("idle"), 3000);
+      }
+    } else if (status === "recording") {
+      stopTicker();
+      setStatus("processing");
+      try {
+        const result = await invoke<{ original: string; polished: string; latency_ms: number }>(
+          "stop_and_process"
+        );
+        setLastResult({ original: result.original, polished: result.polished });
+        await invoke("inject", { result });
+        setStatus("done");
+        setTimeout(() => setStatus("idle"), 3000);
+        const h = await invoke<HistoryEntry[]>("get_history", { limit: 20 });
+        setHistory(h);
+      } catch (e: any) {
+        setErrorMsg(e.toString());
+        setStatus("error");
+        setTimeout(() => setStatus("idle"), 3000);
+      }
     }
-  }, [status, elapsed]);
+  };
 
-  // Keyboard shortcut
+  // Keyboard shortcut: Escape to stop
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape" && status === "recording") {
-        stopRecording();
+        toggleRecording();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [status, stopRecording]);
-
-  const micReady = micAvailable ? "ready" : "unavailable";
-  const llmReady = llmAvailable ? "ready" : "offline";
+  }, [status]);
 
   return (
     <div className="app">
       <header className="header">
-        <h1 className="logo">Voix</h1>
+        <h1 className="logo">🎙️ Voix</h1>
         <span className="tagline">Voice → Polished Text</span>
       </header>
 
@@ -101,33 +140,41 @@ function App() {
         {/* Status indicator */}
         <div className={`status-panel ${status}`}>
           {status === "idle" && (
-            <button className="record-btn" onClick={startRecording} disabled={!micAvailable}>
-              <span className="mic-icon">🎙️</span>
+            <button className="record-btn" onClick={toggleRecording} disabled={!micAvailable}>
+              <span className="mic-icon">🎤</span>
               <span>Click or press Option+E</span>
             </button>
           )}
+
           {status === "recording" && (
             <div className="recording-ui">
               <div className="pulse-ring">
                 <span className="rec-dot">●</span>
               </div>
+              {/* Audio level bar */}
+              <div className="level-bar">
+                <div className="level-fill" style={{ width: `${audioLevel * 100}%` }} />
+              </div>
               <span className="rec-label">REC</span>
               <span className="rec-time">{elapsed}s</span>
-              <button className="stop-btn" onClick={stopRecording}>Stop</button>
+              <button className="stop-btn" onClick={toggleRecording}>■ Stop</button>
             </div>
           )}
+
           {status === "processing" && (
             <div className="processing-ui">
               <span className="spinner">◌</span>
-              <span>Polishing...</span>
+              <span>Transcribing & Polishing...</span>
             </div>
           )}
+
           {status === "done" && (
             <div className="done-ui">
               <span className="check">✓</span>
               <span>Injected!</span>
             </div>
           )}
+
           {status === "error" && (
             <div className="error-ui">
               <span className="err-icon">✗</span>
@@ -137,17 +184,25 @@ function App() {
         </div>
 
         {/* Last result */}
-        {lastResult && status === "done" && (
+        {lastResult && (
           <div className="last-result">
-            <div className="result-original">{lastResult.original}</div>
-            <div className="result-polished">{lastResult.polished}</div>
+            {lastResult.original && (
+              <div className="result-original">
+                <span className="label">原始</span>
+                <p>{lastResult.original}</p>
+              </div>
+            )}
+            <div className="result-polished">
+              <span className="label">润色后</span>
+              <p>{lastResult.polished}</p>
+            </div>
           </div>
         )}
 
         {/* History */}
         {history.length > 0 && (
           <div className="history">
-            <h2>History</h2>
+            <h2>历史记录</h2>
             {history.slice(0, 5).map((entry) => (
               <div key={entry.id} className="history-entry">
                 <div className="history-meta">
@@ -163,16 +218,13 @@ function App() {
 
       <footer className="footer">
         <div className="status-bar">
-          <span className={`mic-status ${micReady}`}>
-            {micAvailable ? "● Mic ready" : "✗ Mic unavailable"}
+          <span className={`mic-status ${micAvailable ? "ready" : "unavailable"}`}>
+            {micAvailable ? "● Mic" : "✗ Mic"}
           </span>
-          <span className={`llm-status ${llmReady}`}>
-            {llmAvailable ? "● LLM ready" : "○ LLM offline"}
+          <span className={`llm-status ${llmAvailable ? "ready" : "offline"}`}>
+            {llmAvailable ? "● LLM" : "○ LLM"}
           </span>
         </div>
-        <button className="settings-btn" onClick={() => invoke("open_settings")}>
-          Settings
-        </button>
       </footer>
     </div>
   );

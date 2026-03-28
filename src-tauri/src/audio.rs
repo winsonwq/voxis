@@ -1,12 +1,31 @@
 //! Voix — Audio capture module
-//! Handles microphone input via cpal
+//! Handles microphone input via cpal with start/stop control
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// AudioManager handles microphone capture
+/// Shared state between audio thread and caller
+pub struct AudioState {
+    pub samples: Arc<Mutex<Vec<f32>>>,
+    pub recording: Arc<AtomicBool>,
+    pub sample_rate: u32,
+    pub stream: Option<cpal::InputStream>,
+}
+
+impl AudioState {
+    pub fn new(sample_rate: u32) -> Self {
+        Self {
+            samples: Arc::new(Mutex::new(Vec::new())),
+            recording: Arc::new(AtomicBool::new(false)),
+            sample_rate,
+            stream: None,
+        }
+    }
+}
+
+/// AudioManager handles microphone capture with start/stop
 pub struct AudioManager {
     target_sample_rate: u32,
 }
@@ -14,11 +33,10 @@ pub struct AudioManager {
 impl AudioManager {
     pub fn new() -> Self {
         Self {
-            target_sample_rate: 16000, // Whisper expects 16kHz
+            target_sample_rate: 16000,
         }
     }
 
-    /// List all available audio input devices
     pub fn list_devices() -> Result<Vec<String>> {
         let host = cpal::default_host();
         let mut devices = Vec::new();
@@ -30,30 +48,25 @@ impl AudioManager {
         Ok(devices)
     }
 
-    /// Check if microphone is available
     pub fn is_available() -> bool {
-        Self::list_devices()
-            .map(|d| !d.is_empty())
-            .unwrap_or(false)
+        Self::list_devices().map(|d| !d.is_empty()).unwrap_or(false)
     }
 
-    /// Capture audio for given duration, returns 16kHz mono f32 samples
-    pub fn capture(&self, duration_secs: f32) -> Result<Vec<f32>> {
+    /// Start capturing audio. Returns a shared state object.
+    /// Call `stop_capture` on the returned state to finish.
+    pub fn start_capture(&self) -> Result<AudioState> {
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .context("No default input device")?;
-
+        let device = host.default_input_device().context("No default input device")?;
         let config = device.default_input_config().context("Can't get input config")?;
         let source_sample_rate = config.sample_rate().0;
         let channels = config.channels();
 
-        let samples = Arc::new(Mutex::new(Vec::<f32>::with_capacity(
-            source_sample_rate as usize * duration_secs as usize,
-        )));
-        let samples_clone = samples.clone();
+        let mut state = AudioState::new(source_sample_rate);
+        let samples = state.samples.clone();
+        let recording = state.recording.clone();
+        recording.store(true, Ordering::SeqCst);
 
-        let recording = Arc::new(AtomicBool::new(true));
+        let samples_clone = samples.clone();
         let recording_clone = recording.clone();
 
         let err_fn = move |err| {
@@ -62,8 +75,10 @@ impl AudioManager {
         };
 
         let data_fn = move |data: &[f32], _: &cpal::InputCallbackInfo| {
+            if !recording.load(Ordering::SeqCst) {
+                return;
+            }
             let mut buf = samples_clone.lock().unwrap();
-            // Mix to mono if stereo
             if channels == 1 {
                 buf.extend_from_slice(data);
             } else {
@@ -76,27 +91,46 @@ impl AudioManager {
 
         let stream = device.build_input_stream(&config.into(), data_fn, err_fn, None)?;
         stream.play()?;
+        state.stream = Some(stream);
 
-        std::thread::sleep(std::time::Duration::from_secs_f32(duration_secs));
-        recording.store(false, Ordering::SeqCst);
-        drop(stream);
+        Ok(state)
+    }
 
-        // Downsample to 16kHz if needed
-        let raw = samples.lock().unwrap();
-        if source_sample_rate == 16000 {
-            Ok(raw.clone())
-        } else {
-            let ratio = source_sample_rate as f32 / 16000.0;
-            let downsampled_len = (raw.len() as f32 / ratio) as usize;
-            let mut result = Vec::with_capacity(downsampled_len);
-            for i in 0..downsampled_len {
-                let src_idx = (i as f32 * ratio) as usize;
-                if src_idx < raw.len() {
-                    result.push(raw[src_idx]);
-                }
-            }
-            Ok(result)
+    /// Stop capture and return downsampled 16kHz mono samples
+    pub fn stop_capture(state: &AudioState) -> Vec<f32> {
+        state.recording.store(false, Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let raw = state.samples.lock().unwrap();
+        let source_sample_rate = state.sample_rate;
+
+        if source_sample_rate == 16000 || raw.is_empty() {
+            return raw.clone();
         }
+
+        // Downsample to 16kHz
+        let ratio = source_sample_rate as f32 / 16000.0;
+        let downsampled_len = (raw.len() as f32 / ratio) as usize;
+        let mut result = Vec::with_capacity(downsampled_len);
+        for i in 0..downsampled_len {
+            let src_idx = (i as f32 * ratio) as usize;
+            if src_idx < raw.len() {
+                result.push(raw[src_idx]);
+            }
+        }
+        result
+    }
+
+    /// Get current audio level (0.0 - 1.0) for visualization
+    pub fn get_level(state: &AudioState) -> f32 {
+        let samples = state.samples.lock().unwrap();
+        if samples.is_empty() {
+            return 0.0;
+        }
+        let last = samples.iter().rev().take(1600);
+        let sum: f32 = last.map(|s| s.abs()).sum();
+        let avg = sum / samples.len().min(1600) as f32;
+        (avg * 10.0).min(1.0)
     }
 }
 

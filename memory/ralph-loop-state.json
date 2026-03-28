@@ -1,0 +1,17 @@
+{
+  "lastRun": null,
+  "lastPhase": "SURVEY",
+  "branch": "main",
+  "incompleteTasks": [
+    "Global hotkey registration (P0)",
+    "Start/stop recording flow (P0)",
+    "Accessibility permission check & prompt (P0)",
+    "Settings panel UI (P1)",
+    "Waveform visualization (P1)",
+    "System tray status updates (P1)",
+    "Inject failure clipboard fallback (P2)",
+    "Notifications (P2)"
+  ],
+  "currentBranch": null,
+  "completedThisSession": []
+}
