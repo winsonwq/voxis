@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
@@ -27,48 +27,26 @@ function App() {
   const levelRef = useRef<number | null>(null);
   const startTimeRef = useRef<number>(0);
 
+  // Load initial state
   useEffect(() => {
-    loadState();
-
-    // Listen for backend events
-    const unlistenHotkey = listen("hotkey-triggered", () => {
-      toggleRecording();
-    });
-
-    const unlistenStarted = listen("recording-started", () => {
-      setStatus("recording");
-      startTimeRef.current = Date.now();
-    });
-
-    const unlistenStopped = listen<string>("recording-stopped", (event) => {
-      setLastResult({ original: "", polished: event.payload });
-      setStatus("done");
-      setTimeout(() => setStatus("idle"), 3000);
-    });
-
-    return () => {
-      unlistenHotkey.then((f) => f());
-      unlistenStarted.then((f) => f());
-      unlistenStopped.then((f) => f());
+    const init = async () => {
+      try {
+        await invoke("init_whisper");
+        await invoke("init_llm");
+        const mic = await invoke<boolean>("check_mic");
+        setMicAvailable(mic);
+        const llm = await invoke<boolean>("check_llm");
+        setLlmAvailable(llm);
+        const h = await invoke<HistoryEntry[]>("get_history", { limit: 20 });
+        setHistory(h);
+      } catch (e) {
+        console.error("Init error:", e);
+      }
     };
-  }, [toggleRecording]);
+    init();
+  }, []);
 
-  const loadState = async () => {
-    try {
-      await invoke("init_whisper");
-      await invoke("init_llm");
-      const mic = await invoke<boolean>("check_mic");
-      setMicAvailable(mic);
-      const llm = await invoke<boolean>("check_llm");
-      setLlmAvailable(llm);
-      const h = await invoke<HistoryEntry[]>("get_history", { limit: 20 });
-      setHistory(h);
-    } catch (e) {
-      console.error("Init error:", e);
-    }
-  };
-
-  const startTicker = () => {
+  const startTicker = useCallback(() => {
     startTimeRef.current = Date.now();
     tickerRef.current = window.setInterval(() => {
       setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
@@ -79,24 +57,21 @@ function App() {
         setAudioLevel(level);
       } catch {}
     }, 50);
-  };
+  }, []);
 
-  const stopTicker = () => {
+  const stopTicker = useCallback(() => {
     if (tickerRef.current) clearInterval(tickerRef.current);
     if (levelRef.current) clearInterval(levelRef.current);
     setElapsed(0);
     setAudioLevel(0);
-  };
+  }, []);
 
-  const toggleRecording = async () => {
+  const toggleRecording = useCallback(async () => {
     if (status === "idle") {
       try {
-        const r = await invoke<boolean>("is_currently_recording");
-        if (!r) {
-          await invoke("start_recording");
-          setStatus("recording");
-          startTicker();
-        }
+        await invoke("start_recording");
+        setStatus("recording");
+        startTicker();
       } catch (e: any) {
         setErrorMsg(e.toString());
         setStatus("error");
@@ -121,9 +96,33 @@ function App() {
         setTimeout(() => setStatus("idle"), 3000);
       }
     }
-  };
+  }, [status, startTicker, stopTicker]);
 
-  // Keyboard shortcut: Escape to stop
+  // Listen for backend events
+  useEffect(() => {
+    const unlistenHotkey = listen("hotkey-triggered", () => {
+      toggleRecording();
+    });
+
+    const unlistenStarted = listen("recording-started", () => {
+      setStatus("recording");
+      startTimeRef.current = Date.now();
+    });
+
+    const unlistenStopped = listen<string>("recording-stopped", (event) => {
+      setLastResult({ original: "", polished: event.payload });
+      setStatus("done");
+      setTimeout(() => setStatus("idle"), 3000);
+    });
+
+    return () => {
+      unlistenHotkey.then((f) => f());
+      unlistenStarted.then((f) => f());
+      unlistenStopped.then((f) => f());
+    };
+  }, [toggleRecording]);
+
+  // Escape key to stop recording
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape" && status === "recording") {
@@ -132,7 +131,7 @@ function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [status]);
+  }, [status, toggleRecording]);
 
   return (
     <div className="app">
