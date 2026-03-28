@@ -11,7 +11,6 @@ pub struct AudioState {
     pub samples: Arc<Mutex<Vec<f32>>>,
     pub recording: Arc<AtomicBool>,
     pub sample_rate: u32,
-    pub stream: Option<cpal::InputStream>,
 }
 
 impl AudioState {
@@ -20,7 +19,6 @@ impl AudioState {
             samples: Arc::new(Mutex::new(Vec::new())),
             recording: Arc::new(AtomicBool::new(false)),
             sample_rate,
-            stream: None,
         }
     }
 }
@@ -53,15 +51,15 @@ impl AudioManager {
     }
 
     /// Start capturing audio. Returns a shared state object.
-    /// Call `stop_capture` on the returned state to finish.
-    pub fn start_capture(&self) -> Result<AudioState> {
+    /// The stream is kept alive inside the state.
+    pub fn start_capture(&self) -> Result<(AudioState, cpal::Stream)> {
         let host = cpal::default_host();
         let device = host.default_input_device().context("No default input device")?;
         let config = device.default_input_config().context("Can't get input config")?;
         let source_sample_rate = config.sample_rate().0;
         let channels = config.channels();
 
-        let mut state = AudioState::new(source_sample_rate);
+        let state = AudioState::new(source_sample_rate);
         let samples = state.samples.clone();
         let recording = state.recording.clone();
         recording.store(true, Ordering::SeqCst);
@@ -91,9 +89,8 @@ impl AudioManager {
 
         let stream = device.build_input_stream(&config.into(), data_fn, err_fn, None)?;
         stream.play()?;
-        state.stream = Some(stream);
 
-        Ok(state)
+        Ok((state, stream))
     }
 
     /// Stop capture and return downsampled 16kHz mono samples

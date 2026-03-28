@@ -31,22 +31,27 @@ function App() {
     loadState();
 
     // Listen for backend events
-    const unlisten1 = listen("recording-started", () => {
+    const unlistenHotkey = listen("hotkey-triggered", () => {
+      toggleRecording();
+    });
+
+    const unlistenStarted = listen("recording-started", () => {
       setStatus("recording");
       startTimeRef.current = Date.now();
     });
 
-    const unlisten2 = listen<string>("recording-stopped", (event) => {
+    const unlistenStopped = listen<string>("recording-stopped", (event) => {
       setLastResult({ original: "", polished: event.payload });
       setStatus("done");
       setTimeout(() => setStatus("idle"), 3000);
     });
 
     return () => {
-      unlisten1.then((f) => f());
-      unlisten2.then((f) => f());
+      unlistenHotkey.then((f) => f());
+      unlistenStarted.then((f) => f());
+      unlistenStopped.then((f) => f());
     };
-  }, []);
+  }, [toggleRecording]);
 
   const loadState = async () => {
     try {

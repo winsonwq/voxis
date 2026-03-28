@@ -1,8 +1,9 @@
 //! Voix — Whisper transcription module
+//! Handles local speech-to-text using whisper.cpp
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
-use whisper_rs::{FullParams, WhisperContext, WhisperContextParameters, WhisperState};
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
 
 /// Transcription engine using whisper.cpp
 pub struct WhisperEngine {
@@ -15,7 +16,7 @@ impl WhisperEngine {
     /// Download and initialize the whisper model
     pub fn new(model_size: ModelSize) -> Result<Self> {
         let model_path = WhisperEngine::ensure_model(model_size)?;
-        let ctx = WhisperContext::new_from_file_with_params(
+        let ctx = WhisperContext::new_with_params(
             &model_path,
             WhisperContextParameters::new(),
         )
@@ -60,22 +61,25 @@ impl WhisperEngine {
         let mut file = std::fs::File::create(&path).context("Failed to create model file")?;
         let mut downloaded: u64 = 0;
 
-        for chunk in response.bytes() {
-            let chunk = chunk.context("Download failed")?;
-            std::io::Write::write_all(&mut file, &chunk)?;
+        let bytes = response.bytes().context("Download failed")?;
+        let bytes_total = bytes.len() as u64;
+
+        for chunk in bytes.chunks(65536) {
+            std::io::Write::write_all(&mut file, chunk)?;
             downloaded += chunk.len() as u64;
-            if total_size > 0 {
-                let pct = (downloaded * 100) / total_size;
+            if bytes_total > 0 {
+                let pct = (downloaded * 100) / bytes_total;
                 log::info!("Download progress: {pct}%");
             }
         }
 
+        log::info!("Whisper model downloaded: {}", path.display());
         Ok(path)
     }
 
     /// Transcribe audio samples (16kHz mono f32) → text
     pub fn transcribe(&mut self, samples: &[f32]) -> Result<String> {
-        let mut params = FullParams::new();
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(Some("en"));
         params.set_translate(false);
         params.set_print_special(false);
@@ -87,10 +91,12 @@ impl WhisperEngine {
 
         // Collect all results
         let mut result = String::new();
-        let n_segments = self.state.n_segments();
+        let n_segments = self.state.full_n_segments();
         for i in 0..n_segments {
-            if let Some(segment) = self.state.segment(i) {
-                result.push_str(&segment.text());
+            if let Some(segment) = self.state.get_segment(i) {
+                if let Ok(text) = segment.to_str() {
+                    result.push_str(text);
+                }
             }
         }
 
@@ -108,6 +114,6 @@ pub enum ModelSize {
 
 impl Default for ModelSize {
     fn default() -> Self {
-        Self::Small // Balance of speed and accuracy
+        Self::Small
     }
 }
